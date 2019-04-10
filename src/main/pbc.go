@@ -3,7 +3,6 @@ package main
 //
 // pbservice client application
 //
-// export GOPATH=~/6.824
 // go build viewd.go
 // go build pbd.go
 // go build pbc.go
@@ -14,8 +13,8 @@ package main
 // ./pbc /tmp/rtm-v key1
 //
 // change "rtm" to your user name.
-// start the pbd programs in separate windows and kill
-// and restart them to exercise fault tolerance.
+// start the pbd programs in separate windows, kill them
+// and then restart them to exercise fault tolerance.
 //
 
 import "pbservice"
