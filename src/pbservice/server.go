@@ -68,18 +68,18 @@ func (pb *PBServer) tick() {
 
 	recView, e := pb.vs.Ping(pb.currentView.Viewnum)
 	if e == nil {
-		pb.currentView = recView
 		if recView.Primary == pb.me && pb.currentView.Primary == pb.me && recView.Backup != pb.currentView.Backup && recView.Backup != "" {
 			pb.isSync = false
 		}
-		if !pb.isSync && pb.me == pb.currentView.Primary {
+		if !pb.isSync && pb.me == recView.Primary {
 			var reply SyncReply
 
-			ok := call(pb.currentView.Backup, "PBServer.SyncKeyValue", &SyncArgs{KeyValue: pb.keyValue, RequestHis: pb.requestHis}, &reply)
+			ok := call(recView.Backup, "PBServer.SyncKeyValue", &SyncArgs{KeyValue: pb.keyValue, RequestHis: pb.requestHis}, &reply)
 			if ok && reply.Err == OK {
 				pb.isSync = true
 			}
 		}
+		pb.currentView = recView
 	}
 
 	pb.mu.Unlock()
