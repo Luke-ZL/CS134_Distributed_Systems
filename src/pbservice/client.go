@@ -1,16 +1,19 @@
 package pbservice
 
-import "viewservice"
-import "net/rpc"
-import "fmt"
-
-import "crypto/rand"
-import "math/big"
-
+import (
+	"crypto/rand"
+	"fmt"
+	"math/big"
+	"net/rpc"
+	"strconv"
+	"time"
+	"viewservice"
+)
 
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	currentView viewservice.View
 }
 
 // this may come in handy.
@@ -25,10 +28,9 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
-
+	ck.currentView, _ = ck.vs.Get()
 	return ck
 }
-
 
 //
 // call() sends an RPC to the rpcname handler on server srv
@@ -71,11 +73,28 @@ func call(srv string, rpcname string,
 // primary replies with the value or the primary
 // says the key doesn't exist (has never been Put().
 //
+
+func CreateId() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 10) + strconv.FormatInt(nrand(), 10)
+}
+
 func (ck *Clerk) Get(key string) string {
 
 	// Your code here.
+	var reply GetReply
+	args := &GetArgs{Key: key, Id: CreateId()}
+	ok := call(ck.currentView.Primary, "PBServer.Get", args, &reply)
 
-	return "???"
+	for !ok || reply.Err != OK {
+		if reply.Err == ErrNoKey {
+			return ""
+		} else {
+			ck.currentView, _ = ck.vs.Get()
+			ok = call(ck.currentView.Primary, "PBServer.Get", args, &reply)
+		}
+	}
+
+	return reply.Value
 }
 
 //
@@ -84,6 +103,15 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
+	var reply PutAppendReply
+	args := &PutAppendArgs{Key: key, Value: value, OpType: op, Id: CreateId()}
+	ok := call(ck.currentView.Primary, "PBServer.PutAppend", args, &reply)
+
+	for !ok || reply.Err != OK {
+		ck.currentView, _ = ck.vs.Get()
+		ok = call(ck.currentView.Primary, "PBServer.PutAppend", args, &reply)
+	}
+
 }
 
 //

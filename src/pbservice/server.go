@@ -1,18 +1,18 @@
 package pbservice
 
-import "net"
-import "fmt"
-import "net/rpc"
-import "log"
-import "time"
-import "viewservice"
-import "sync"
-import "sync/atomic"
-import "os"
-import "syscall"
-import "math/rand"
-
-
+import (
+	"fmt"
+	"log"
+	"math/rand"
+	"net"
+	"net/rpc"
+	"os"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+	"viewservice"
+)
 
 type PBServer struct {
 	mu         sync.Mutex
@@ -22,25 +22,26 @@ type PBServer struct {
 	me         string
 	vs         *viewservice.Clerk
 	// Your declarations here.
-}
 
+	currentView viewservice.View
+	isSync      bool
+	keyValue    map[string]string
+	requestHis  map[string]Request
+}
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
-
+	reply.Err = OK //DELETE LATER
 	return nil
 }
-
 
 func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 
 	// Your code here.
-
-
+	reply.Err = OK //DELETE LATER
 	return nil
 }
-
 
 //
 // ping the viewserver periodically.
@@ -48,9 +49,40 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 //   transition to new view.
 //   manage transfer of state from primary to new backup.
 //
+func (pb *PBServer) SyncKeyValue(args *SyncArgs, reply *SyncReply) error {
+	if pb.me != pb.currentView.Backup {
+		reply.Err = ErrWrongServer
+	} else {
+		pb.keyValue = args.KeyValue
+		pb.requestHis = args.RequestHis
+		reply.Err = OK
+	}
+
+	return nil
+}
+
 func (pb *PBServer) tick() {
 
 	// Your code here.
+	pb.mu.Lock()
+
+	recView, e := pb.vs.Ping(pb.currentView.Viewnum)
+	if e == nil {
+		pb.currentView = recView
+		if recView.Primary == pb.me && pb.currentView.Primary == pb.me && recView.Backup != pb.currentView.Backup && recView.Backup != "" {
+			pb.isSync = false
+		}
+		if !pb.isSync && pb.me == pb.currentView.Primary {
+			var reply SyncReply
+
+			ok := call(pb.currentView.Backup, "PBServer.SyncKeyValue", &SyncArgs{KeyValue: pb.keyValue, RequestHis: pb.requestHis}, &reply)
+			if ok && reply.Err == OK {
+				pb.isSync = true
+			}
+		}
+	}
+
+	pb.mu.Unlock()
 }
 
 // tell the server to shut itself down.
@@ -78,12 +110,15 @@ func (pb *PBServer) isunreliable() bool {
 	return atomic.LoadInt32(&pb.unreliable) != 0
 }
 
-
 func StartServer(vshost string, me string) *PBServer {
 	pb := new(PBServer)
 	pb.me = me
 	pb.vs = viewservice.MakeClerk(me, vshost)
 	// Your pb.* initializations here.
+	pb.isSync = true
+	pb.currentView = viewservice.View{Viewnum: 0, Primary: "", Backup: ""}
+	pb.keyValue = make(map[string]string)
+	pb.requestHis = make(map[string]Request)
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(pb)
