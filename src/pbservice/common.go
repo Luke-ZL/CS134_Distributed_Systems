@@ -15,6 +15,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	OpType string
 	Id     string
+
+	ShouldForward bool
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 }
@@ -27,6 +29,8 @@ type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
 	Id string
+
+	ShouldForward bool
 }
 
 type GetReply struct {

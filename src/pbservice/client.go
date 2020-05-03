@@ -82,14 +82,25 @@ func (ck *Clerk) Get(key string) string {
 
 	// Your code here.
 	var reply GetReply
-	args := &GetArgs{Key: key, Id: CreateId()}
+	args := &GetArgs{Key: key, Id: CreateId(), ShouldForward: true}
 	ok := call(ck.currentView.Primary, "PBServer.Get", args, &reply)
 
 	for !ok || reply.Err != OK {
 		if reply.Err == ErrNoKey {
 			return ""
 		} else {
+			time.Sleep(viewservice.PingInterval)
 			ck.currentView, _ = ck.vs.Get()
+			/*
+				log.Printf("Client get call vs")
+				if reply.Err == ErrWrongServer {
+					log.Printf("Wrong Server")
+				}
+				if !ok {
+					log.Printf("not Ok")
+					log.Printf(ck.currentView.Primary)
+				}
+			*/
 			ok = call(ck.currentView.Primary, "PBServer.Get", args, &reply)
 		}
 	}
@@ -104,11 +115,21 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
 	var reply PutAppendReply
-	args := &PutAppendArgs{Key: key, Value: value, OpType: op, Id: CreateId()}
+	args := &PutAppendArgs{Key: key, Value: value, OpType: op, Id: CreateId(), ShouldForward: true}
 	ok := call(ck.currentView.Primary, "PBServer.PutAppend", args, &reply)
 
 	for !ok || reply.Err != OK {
+		time.Sleep(viewservice.PingInterval)
 		ck.currentView, _ = ck.vs.Get()
+		/*if !ok {
+			log.Printf("not OK")
+		}
+		if reply.Err == ErrWrongServer {
+			log.Printf("Wrong Server")
+		}
+		if reply.Err == "" {
+			log.Printf("NIL")
+		}*/
 		ok = call(ck.currentView.Primary, "PBServer.PutAppend", args, &reply)
 	}
 

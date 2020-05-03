@@ -29,17 +29,113 @@ type PBServer struct {
 	requestHis  map[string]Request
 }
 
+func (pb *PBServer) IsSelfPrimary() bool {
+	return pb.currentView.Primary == pb.me
+}
+
+func (pb *PBServer) IsSelfBackup() bool {
+	return pb.currentView.Backup == pb.me
+}
+
+func (pb *PBServer) NoBackupAvailable() bool {
+	return pb.currentView.Backup == ""
+}
+
+func (pb *PBServer) IsDuplicatedGet(args *GetArgs) bool {
+	dup, ok := pb.requestHis[args.Id]
+	return ok && dup.Key == args.Key
+}
+
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
-	reply.Err = OK //DELETE LATER
+	if args.ShouldForward {
+		pb.mu.Lock()
+		defer pb.mu.Unlock()
+	}
+
+	if args.ShouldForward && !pb.IsSelfPrimary() || !args.ShouldForward && !pb.IsSelfBackup() {
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	if pb.IsDuplicatedGet(args) {
+		reply.Value = pb.keyValue[args.Key]
+		reply.Err = OK
+		return nil
+	}
+
+	value, ok2 := pb.keyValue[args.Key]
+
+	if ok2 {
+		reply.Value = value
+	} else {
+		reply.Err = ErrNoKey
+	}
+
+	pb.requestHis[args.Id] = Request{Key: args.Key, Value: "", OpType: "Get"}
+
+	if !args.ShouldForward || pb.NoBackupAvailable() {
+		return nil
+	}
+
+	forwardArgs := args
+	forwardArgs.ShouldForward = false
+	ok := call(pb.currentView.Backup, "PBServer.Get", forwardArgs, &reply)
+
+	if !ok || reply.Err == ErrWrongServer || reply.Value != pb.keyValue[args.Key] {
+		pb.isSync = false
+	} else {
+		reply.Err = OK
+	}
+
 	return nil
+}
+
+func (pb *PBServer) IsDuplicatedPutAppend(args *PutAppendArgs) bool {
+	dup, ok := pb.requestHis[args.Id]
+	return ok && dup.Key == args.Key && dup.Value == args.Value && dup.OpType == args.OpType
 }
 
 func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 
 	// Your code here.
-	reply.Err = OK //DELETE LATER
+	if args.ShouldForward {
+		pb.mu.Lock()
+		defer pb.mu.Unlock()
+	}
+
+	if args.ShouldForward && !pb.IsSelfPrimary() || !args.ShouldForward && !pb.IsSelfBackup() {
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	if pb.IsDuplicatedPutAppend(args) {
+		reply.Err = OK
+		return nil
+	}
+
+	switch args.OpType {
+	case "Put":
+		pb.keyValue[args.Key] = args.Value
+	case "Append":
+		pb.keyValue[args.Key] = pb.keyValue[args.Key] + args.Value
+	}
+
+	pb.requestHis[args.Id] = Request{Key: args.Key, Value: args.Value, OpType: args.OpType}
+	reply.Err = OK
+	if !args.ShouldForward || pb.NoBackupAvailable() {
+		return nil
+	}
+
+	forwardArgs := args
+	forwardArgs.ShouldForward = false
+	ok := call(pb.currentView.Backup, "PBServer.PutAppend", forwardArgs, &reply)
+
+	if !ok || reply.Err != OK || args.Value != pb.keyValue[args.Key] {
+		pb.isSync = false
+	}
+
 	return nil
 }
 
@@ -50,7 +146,10 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 //   manage transfer of state from primary to new backup.
 //
 func (pb *PBServer) SyncKeyValue(args *SyncArgs, reply *SyncReply) error {
-	if pb.me != pb.currentView.Backup {
+
+	recView, _ := pb.vs.Ping(pb.currentView.Viewnum)
+
+	if pb.me != recView.Backup {
 		reply.Err = ErrWrongServer
 	} else {
 		pb.keyValue = args.KeyValue
@@ -68,7 +167,7 @@ func (pb *PBServer) tick() {
 
 	recView, e := pb.vs.Ping(pb.currentView.Viewnum)
 	if e == nil {
-		if recView.Primary == pb.me && pb.currentView.Primary == pb.me && recView.Backup != pb.currentView.Backup && recView.Backup != "" {
+		if recView.Primary == pb.me && recView.Backup != pb.currentView.Backup && recView.Backup != "" {
 			pb.isSync = false
 		}
 		if !pb.isSync && pb.me == recView.Primary {
