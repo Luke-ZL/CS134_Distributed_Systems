@@ -4,6 +4,8 @@ const (
 	OK               = "OK"
 	ErrPrepareReject = "ErrPrepareReject"
 	ErrAcceptReject  = "ErrAcceptReject"
+	ErrLearnReject   = "ErrLearnReject"
+	ErrDoneReject    = "ErrDoneReject"
 )
 
 type PrepareArgs struct {
