@@ -1,17 +1,19 @@
 package kvpaxos
 
-import "net"
-import "fmt"
-import "net/rpc"
-import "log"
-import "paxos"
-import "sync"
-import "sync/atomic"
-import "os"
-import "syscall"
-import "encoding/gob"
-import "math/rand"
-
+import (
+	"encoding/gob"
+	"fmt"
+	"log"
+	"math/rand"
+	"net"
+	"net/rpc"
+	"os"
+	"paxos"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+)
 
 const Debug = 0
 
@@ -22,11 +24,15 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Key    string
+	Value  string
+	Op     string
+	Id     string
+	PrevId string
 }
 
 type KVPaxos struct {
@@ -38,17 +44,141 @@ type KVPaxos struct {
 	px         *paxos.Paxos
 
 	// Your definitions here.
+	seq      int
+	db       map[string]string
+	requests map[string]Request
 }
 
+// isDuplicatedGet ...
+func (kv *KVPaxos) isDuplicatedGet(args *GetArgs) bool {
+	dup, ok := kv.requests[args.Id]
+	return ok && dup.Key == args.Key
+}
 
+// isDuplicatedPutAppend ...
+func (kv *KVPaxos) isDuplicatedPutAppend(args *PutAppendArgs) bool {
+	dup, ok := kv.requests[args.Id]
+	return ok && dup.Key == args.Key && dup.Value == args.Value && dup.Op == args.Op
+}
+
+// waitPaxosAgreement ...
+func (kv *KVPaxos) waitPaxosAgreement(seq int, value Op) Op {
+	to := 10 * time.Millisecond
+	for {
+		status, res := kv.px.Status(seq)
+		if status == paxos.Decided {
+			return res.(Op)
+		}
+		time.Sleep(to)
+		if to < 10*time.Second {
+			to *= 2
+		}
+	}
+}
+
+// freeRequest ...
+func (kv *KVPaxos) freeRequest(prevId string) {
+	_, ok := kv.requests[prevId]
+	if ok {
+		delete(kv.requests, prevId)
+	}
+}
+
+// operate
+func (kv *KVPaxos) operate(operation Op) {
+	if operation.Op == "Get" {
+		value, ok := kv.db[operation.Key]
+		if ok {
+			kv.requests[operation.Id] = Request{Op: "Get", Key: operation.Key, Value: value}
+		} else {
+			kv.requests[operation.Id] = Request{}
+		}
+	} else if operation.Op == "Put" {
+		kv.db[operation.Key] = operation.Value
+		kv.requests[operation.Id] = Request{Op: operation.Op, Key: operation.Key, Value: operation.Value}
+	} else if operation.Op == "Append" {
+		kv.db[operation.Key] = kv.db[operation.Key] + operation.Value
+		kv.requests[operation.Id] = Request{Op: operation.Op, Key: operation.Key, Value: operation.Value}
+	}
+}
+
+// Get ...
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if kv.isDuplicatedGet(args) {
+		reply.Value = kv.db[args.Key]
+		reply.Err = OK
+		return nil
+	}
+
+	for {
+		currSeq := kv.seq
+		kv.seq++
+		var operation Op
+		status, res := kv.px.Status(currSeq)
+		if status == paxos.Decided {
+			operation = res.(Op)
+		} else {
+			op := Op{Key: args.Key, Value: "", Op: "Get", Id: args.Id, PrevId: args.PrevId}
+			kv.px.Start(currSeq, op)
+			operation = kv.waitPaxosAgreement(currSeq, op)
+		}
+
+		kv.freeRequest(args.PrevId)
+		kv.operate(operation)
+		kv.px.Done(currSeq)
+
+		if operation.Id == args.Id {
+			if kv.requests[args.Id] == (Request{}) {
+				reply.Value = ""
+				reply.Err = ErrNoKey
+			} else {
+				reply.Value = kv.requests[args.Id].Value
+				reply.Err = OK
+			}
+			break
+		}
+	}
+
 	return nil
 }
 
+// PutAppend ...
 func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 
+	if kv.isDuplicatedPutAppend(args) {
+		reply.Err = OK
+		return nil
+	}
+
+	for {
+		currSeq := kv.seq
+		kv.seq++
+		var operation Op
+		status, res := kv.px.Status(currSeq)
+		if status == paxos.Decided {
+			operation = res.(Op)
+		} else {
+			op := Op{Key: args.Key, Value: args.Value, Op: args.Op, Id: args.Id, PrevId: args.PrevId}
+			kv.px.Start(currSeq, op)
+			operation = kv.waitPaxosAgreement(currSeq, op)
+		}
+
+		kv.freeRequest(args.PrevId)
+		kv.operate(operation)
+		kv.px.Done(currSeq)
+
+		if operation.Id == args.Id {
+			break
+		}
+	}
+	reply.Err = OK
 	return nil
 }
 
@@ -94,6 +224,9 @@ func StartServer(servers []string, me int) *KVPaxos {
 	kv.me = me
 
 	// Your initialization code here.
+	kv.seq = 0
+	kv.db = make(map[string]string)
+	kv.requests = make(map[string]Request)
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(kv)
@@ -106,7 +239,6 @@ func StartServer(servers []string, me int) *KVPaxos {
 		log.Fatal("listen error: ", e)
 	}
 	kv.l = l
-
 
 	// please do not change any of the following code,
 	// or do anything to subvert it.

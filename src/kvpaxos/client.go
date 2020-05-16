@@ -1,14 +1,18 @@
 package kvpaxos
 
-import "net/rpc"
-import "crypto/rand"
-import "math/big"
-
-import "fmt"
+import (
+	"crypto/rand"
+	"fmt"
+	"math/big"
+	"net/rpc"
+	"strconv"
+	"time"
+)
 
 type Clerk struct {
 	servers []string
 	// You will have to modify this struct.
+	prevId string
 }
 
 func nrand() int64 {
@@ -59,6 +63,10 @@ func call(srv string, rpcname string,
 	return false
 }
 
+func CreateId() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 10) + strconv.FormatInt(nrand(), 10)
+}
+
 //
 // fetch the current value for a key.
 // returns "" if the key does not exist.
@@ -66,7 +74,22 @@ func call(srv string, rpcname string,
 //
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	return ""
+	var reply GetReply
+	id := CreateId()
+	for {
+		ok := false
+		for _, server := range ck.servers {
+			ok = call(server, "KVPaxos.Get", &GetArgs{Key: key, Id: id, PrevId: ck.prevId}, &reply)
+			if !ok {
+				time.Sleep(time.Millisecond * 100)
+			}
+		}
+		if ok {
+			break
+		}
+	}
+	ck.prevId = id
+	return reply.Value
 }
 
 //
@@ -74,6 +97,21 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	var reply PutAppendReply
+	id := CreateId()
+	for {
+		ok := false
+		for _, server := range ck.servers {
+			ok = call(server, "KVPaxos.PutAppend", &PutAppendArgs{Key: key, Value: value, Op: op, Id: id, PrevId: ck.prevId}, &reply)
+			if !ok {
+				time.Sleep(time.Millisecond * 100)
+			}
+		}
+		if ok {
+			break
+		}
+	}
+	ck.prevId = id
 }
 
 func (ck *Clerk) Put(key string, value string) {
