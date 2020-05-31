@@ -1,17 +1,20 @@
 package shardmaster
 
-import "net"
-import "fmt"
-import "net/rpc"
-import "log"
-
-import "paxos"
-import "sync"
-import "sync/atomic"
-import "os"
-import "syscall"
-import "encoding/gob"
-import "math/rand"
+import (
+	"encoding/gob"
+	"fmt"
+	"log"
+	"math/rand"
+	"net"
+	"net/rpc"
+	"os"
+	"paxos"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+)
 
 type ShardMaster struct {
 	mu         sync.Mutex
@@ -21,36 +24,187 @@ type ShardMaster struct {
 	unreliable int32 // for testing
 	px         *paxos.Paxos
 
-	configs []Config // indexed by config num
+	configs    []Config // indexed by config num
+	currentSeq int
 }
-
 
 type Op struct {
 	// Your data here.
+	OpType      string
+	OpId        string //unique identifier
+	GID         int64
+	ServerPorts []string
+	ShardNum    int
+	ConfigNum   int
 }
 
+func CreateId() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 10) + strconv.FormatInt(rand.Int63(), 10)
+}
+
+// waitPaxosAgreement ...
+func (sm *ShardMaster) waitPaxosAgreement(seq int, value Op) Op {
+	to := 10 * time.Millisecond
+	for {
+		status, res := sm.px.Status(seq)
+		if status == paxos.Decided {
+			return res.(Op)
+		}
+		time.Sleep(to)
+		if to < 10*time.Second {
+			to *= 2
+		}
+	}
+}
+
+func getMinMax(numShards map[int64]int) (int64, int64) {
+	i := 0
+	var min, max int64
+	for k, v := range numShards {
+		if i == 0 {
+			min = k
+			max = k
+		} else {
+			if v < numShards[min] {
+				min = k
+			}
+			if v > numShards[max] {
+				max = k
+			}
+		}
+		i++
+	}
+	return min, max
+}
+
+func Balance(conf *Config, gID int64, opType string) {
+	if len(conf.Groups) == 1 {
+		for k, _ := range conf.Groups {
+			for i, _ := range conf.Shards {
+				conf.Shards[i] = k
+			}
+			break
+		}
+		return
+	}
+
+	numShardsNow := make(map[int64]int)
+	for k, _ := range conf.Groups {
+		numShardsNow[k] = 0
+	}
+	for _, v := range conf.Shards {
+		numShardsNow[v]++
+	}
+
+	min, max := getMinMax(numShardsNow)
+	if opType == "leave" {
+		for i, v := range conf.Shards {
+			if v == gID {
+				conf.Shards[i] = max
+				numShardsNow[max]++
+			}
+		}
+	}
+
+	for numShardsNow[max]-numShardsNow[min] > 1 {
+		for i, v := range conf.Shards {
+			if v == max {
+				conf.Shards[i] = min
+				numShardsNow[max]--
+				numShardsNow[min]++
+				break
+			}
+		}
+		min, max = getMinMax(numShardsNow)
+	}
+}
+
+func (sm *ShardMaster) Operate(op Op) Config {
+	for {
+		conf := Config{}
+		curSeq := sm.currentSeq
+		sm.currentSeq++
+		var operation Op
+		status, res := sm.px.Status(curSeq)
+		if status == paxos.Decided {
+			operation = res.(Op)
+		} else {
+			sm.px.Start(curSeq, op)
+			operation = sm.waitPaxosAgreement(curSeq, op)
+		}
+
+		lastIndex := len(sm.configs) - 1
+		conf.Num = sm.configs[lastIndex].Num + 1
+		for i, v := range sm.configs[lastIndex].Shards {
+			conf.Shards[i] = v
+		}
+		conf.Groups = make(map[int64][]string)
+		for k, v := range sm.configs[lastIndex].Groups {
+			conf.Groups[k] = v
+		}
+
+		switch operation.OpType {
+		case "join":
+			conf.Groups[operation.GID] = operation.ServerPorts
+			Balance(&conf, operation.GID, "join")
+			sm.configs = append(sm.configs, conf)
+		case "leave":
+			delete(conf.Groups, operation.GID)
+			Balance(&conf, operation.GID, "leave")
+			sm.configs = append(sm.configs, conf)
+		case "move":
+			conf.Shards[operation.ShardNum] = operation.GID
+			sm.configs = append(sm.configs, conf)
+		case "query":
+			if operation.ConfigNum == -1 || operation.ConfigNum > lastIndex {
+				conf = sm.configs[lastIndex]
+			} else {
+				conf = sm.configs[operation.ConfigNum]
+			}
+		}
+
+		sm.px.Done(curSeq)
+
+		if operation.OpId == op.OpId {
+			return conf
+		}
+	}
+	return Config{}
+}
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
 	// Your code here.
-
+	sm.mu.Lock()
+	operation := Op{"join", CreateId(), args.GID, args.Servers, -1, -1}
+	sm.Operate(operation)
+	sm.mu.Unlock()
 	return nil
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
 	// Your code here.
-
+	sm.mu.Lock()
+	operation := Op{"leave", CreateId(), args.GID, nil, -1, -1}
+	sm.Operate(operation)
+	sm.mu.Unlock()
 	return nil
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
 	// Your code here.
-
+	sm.mu.Lock()
+	operation := Op{"move", CreateId(), args.GID, nil, args.Shard, -1}
+	sm.Operate(operation)
+	sm.mu.Unlock()
 	return nil
 }
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 	// Your code here.
-
+	sm.mu.Lock()
+	operation := Op{"query", CreateId(), -1, nil, -1, args.Num}
+	reply.Config = sm.Operate(operation)
+	sm.mu.Unlock()
 	return nil
 }
 
@@ -91,6 +245,7 @@ func StartServer(servers []string, me int) *ShardMaster {
 
 	sm.configs = make([]Config, 1)
 	sm.configs[0].Groups = map[int64][]string{}
+	sm.currentSeq = 0
 
 	rpcs := rpc.NewServer()
 
