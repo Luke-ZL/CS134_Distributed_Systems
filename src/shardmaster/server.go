@@ -60,6 +60,8 @@ func (sm *ShardMaster) waitPaxosAgreement(seq int, value Op) Op {
 func getMinMax(numShards map[int64]int) (int64, int64) {
 	i := 0
 	var min, max int64
+	min = 0
+	max = 0
 	for k, v := range numShards {
 		if i == 0 {
 			min = k
@@ -93,19 +95,23 @@ func Balance(conf *Config, gID int64, opType string) {
 		numShardsNow[k] = 0
 	}
 	for _, v := range conf.Shards {
-		numShardsNow[v]++
+		_, ok := conf.Groups[v]
+		if ok {
+			numShardsNow[v]++
+		}
 	}
 
 	min, max := getMinMax(numShardsNow)
 	if opType == "leave" {
 		for i, v := range conf.Shards {
 			if v == gID {
-				conf.Shards[i] = max
-				numShardsNow[max]++
+				conf.Shards[i] = min
+				numShardsNow[min]++
 			}
 		}
 	}
 
+	min, max = getMinMax(numShardsNow)
 	for numShardsNow[max]-numShardsNow[min] > 1 {
 		for i, v := range conf.Shards {
 			if v == max {
