@@ -1,18 +1,22 @@
 package shardkv
 
-import "shardmaster"
-import "net/rpc"
-import "time"
-import "sync"
-import "fmt"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"fmt"
+	"math/big"
+	"net/rpc"
+	"shardmaster"
+	"strconv"
+	"sync"
+	"time"
+)
 
 type Clerk struct {
 	mu     sync.Mutex // one RPC at a time
 	sm     *shardmaster.Clerk
 	config shardmaster.Config
 	// You'll have to modify Clerk.
+	prevId string
 }
 
 func nrand() int64 {
@@ -26,6 +30,7 @@ func MakeClerk(shardmasters []string) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(shardmasters)
 	// You'll have to modify MakeClerk.
+	ck.prevId = "s"
 	return ck
 }
 
@@ -63,6 +68,10 @@ func call(srv string, rpcname string,
 	return false
 }
 
+func CreateId() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 10) + strconv.FormatInt(nrand(), 10)
+}
+
 //
 // which shard is a key in?
 // please use this function,
@@ -87,6 +96,7 @@ func (ck *Clerk) Get(key string) string {
 	defer ck.mu.Unlock()
 
 	// You'll have to modify Get().
+	id := CreateId()
 
 	for {
 		shard := key2shard(key)
@@ -100,6 +110,8 @@ func (ck *Clerk) Get(key string) string {
 			for _, srv := range servers {
 				args := &GetArgs{}
 				args.Key = key
+				args.Id = id
+				args.PrevId = ck.prevId
 				var reply GetReply
 				ok := call(srv, "ShardKV.Get", args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
@@ -124,6 +136,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	defer ck.mu.Unlock()
 
 	// You'll have to modify PutAppend().
+	id := CreateId()
 
 	for {
 		shard := key2shard(key)
@@ -139,6 +152,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				args.Key = key
 				args.Value = value
 				args.Op = op
+				args.Id = id
+				args.PrevId = ck.prevId
 				var reply PutAppendReply
 				ok := call(srv, "ShardKV.PutAppend", args, &reply)
 				if ok && reply.Err == OK {
