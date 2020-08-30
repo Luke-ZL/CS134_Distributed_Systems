@@ -1,7 +1,9 @@
 # Distributed_Systems_Projects
 
 ## Introduction
-This repository contains my CS134 Distributed Systems Projects.
+This repository contains my CS134 Distributed Systems Projects taken in Spring 2020.
+
+### Languge Covered: Golang
 
 ## Components
 [viewservice](https://github.com/Luke-ZL/Distributed_Systems_Projects/tree/master/src/viewservice) is the source code for the master server, view service, which monitors the status of each available servers. This implements [assignment 2](http://web.cs.ucla.edu/~ravi/CS134_S20/assignment2.html) part A for this course.
