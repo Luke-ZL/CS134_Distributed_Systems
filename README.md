@@ -1,4 +1,4 @@
-# Distributed_Systems_Projects
+# CS134_Distributed_Systems
 
 ## Introduction
 This repository contains my CS134 Distributed Systems Projects taken in Spring 2020.
